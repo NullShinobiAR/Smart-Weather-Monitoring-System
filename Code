@@ -1,0 +1,114 @@
+#include <WiFi.h>
+#include "DHT.h"
+#include "ThingSpeak.h"
+
+// --- Blynk IoT template info ---
+#define BLYNK_TEMPLATE_ID "TMPL3qMf53Y_3"
+#define BLYNK_TEMPLATE_NAME "New begining"
+#define BLYNK_AUTH_TOKEN "CphWA0jSlKdVeQbrDhtDjLzyh3bi6Ijg"
+
+#include <BlynkSimpleEsp32.h>  // Blynk library
+
+// -------- WIFI DETAILS --------
+const char* ssid = "Wokwi-GUEST";
+const char* password = "";
+
+// -------- THINGSPEAK DETAILS --------
+unsigned long channelID = 3249645;        
+const char* writeAPIKey = "U3JRSI2KOILHPC5L";  // ThingSpeak Write API Key
+
+// -------- DHT22 SETTINGS --------
+#define DHTPIN 15
+#define DHTTYPE DHT22
+DHT dht(DHTPIN, DHTTYPE);
+
+// -------- SENSOR PINS --------
+#define SOIL_PIN 32      // Potentiometer simulating soil moisture
+#define MQ135_PIN 34     // Potentiometer simulating air quality
+#define FLOW_PIN 14      // Button simulating water flow pulses
+
+WiFiClient client;
+
+// Water flow variables
+volatile int flowCount = 0;
+
+// Interrupt function to count water flow pulses
+void IRAM_ATTR countFlow() {
+  flowCount++;
+}
+
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+
+  // Configure sensor pins
+  pinMode(SOIL_PIN, INPUT);
+  pinMode(MQ135_PIN, INPUT);
+  pinMode(FLOW_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(FLOW_PIN), countFlow, FALLING);
+
+  // Connect to Wi-Fi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+
+  unsigned long startTime = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startTime < 10000) { // 10s timeout
+      delay(500);
+      Serial.print(".");
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\nWiFi connected!");
+      ThingSpeak.begin(client);            // Initialize ThingSpeak
+      Blynk.begin(BLYNK_AUTH_TOKEN, ssid, password); // Initialize Blynk
+  } else {
+      Serial.println("\nWiFi not connected (simulation). ThingSpeak/Blynk updates may fail in Wokwi.");
+  }
+}
+
+void loop() {
+  Blynk.run(); // Required for Blynk
+
+  // Read sensors
+  float temperature = dht.readTemperature();
+  float humidity = dht.readHumidity();
+  int soilMoisture = analogRead(SOIL_PIN);
+  int airQuality = analogRead(MQ135_PIN);
+  int flow = flowCount;
+
+  if (isnan(temperature) || isnan(humidity)) {
+      Serial.println("Failed to read from DHT sensor!");
+      delay(2000);
+      return;
+  }
+
+  // Print all values to Serial Monitor
+  Serial.print("Temp: "); Serial.print(temperature); Serial.print(" °C  |  ");
+  Serial.print("Humidity: "); Serial.print(humidity); Serial.print(" %  |  ");
+  Serial.print("Soil: "); Serial.print(soilMoisture); Serial.print("  |  ");
+  Serial.print("Air: "); Serial.print(airQuality); Serial.print("  |  ");
+  Serial.print("Flow pulses: "); Serial.println(flow);
+
+  // --- Send to ThingSpeak ---
+  if (WiFi.status() == WL_CONNECTED) {
+      ThingSpeak.setField(1, temperature);
+      ThingSpeak.setField(2, humidity);
+      ThingSpeak.setField(3, soilMoisture);
+      ThingSpeak.setField(4, airQuality);
+      ThingSpeak.setField(5, flow);
+
+      int status = ThingSpeak.writeFields(channelID, writeAPIKey);
+      if (status == 200) Serial.println("Data sent to ThingSpeak successfully!");
+      else Serial.print("ThingSpeak error: "), Serial.println(status);
+  }
+
+  // --- Send to Blynk ---
+  Blynk.virtualWrite(V0, temperature);      // Temperature
+  Blynk.virtualWrite(V1, humidity);         // Humidity
+  Blynk.virtualWrite(V2, soilMoisture);     // Soil Moisture
+  Blynk.virtualWrite(V3, airQuality);       // Air Quality
+  Blynk.virtualWrite(V4, flow);             // Water Flow
+
+  flowCount = 0; // reset flow pulses for next interval
+  delay(20000);  // ThingSpeak minimum update interval
+}
